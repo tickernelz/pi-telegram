@@ -1070,6 +1070,7 @@ export function registerTelegramLifecycleRuntimeHooks({
     isSessionActive: isSessionContextActive,
     ...sessionLifecycleRuntime,
     ...agentLifecycleHooks,
+    recordRuntimeEvent,
     onInput(event) {
       activityRuntime.recordInputSource(event.source ?? "unknown");
     },

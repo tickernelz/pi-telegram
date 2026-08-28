@@ -118,7 +118,20 @@ export interface TelegramLifecycleRegistrationDeps {
     event: AgentSettledEvent,
     ctx: ExtensionContext,
   ) => Promise<void> | void;
+  agentSettledFallbackDelayMs?: number;
+  setTimer?: (
+    callback: () => void,
+    ms: number,
+  ) => ReturnType<typeof setTimeout>;
+  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
+  recordRuntimeEvent?: (
+    category: string,
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => void;
 }
+
+export const TELEGRAM_AGENT_SETTLED_FALLBACK_DELAY_MS = 1500;
 
 export interface TelegramSessionLifecycleHooks {
   onSessionStart: (
@@ -572,6 +585,68 @@ export function registerTelegramLifecycleHooks(
 ): void {
   const isActive = (ctx: ExtensionContext): boolean =>
     deps.isSessionActive?.(ctx) !== false;
+  const settleFallbackDelayMs =
+    deps.agentSettledFallbackDelayMs ??
+    TELEGRAM_AGENT_SETTLED_FALLBACK_DELAY_MS;
+  const setTimer =
+    deps.setTimer ??
+    ((callback: () => void, ms: number): ReturnType<typeof setTimeout> =>
+      setTimeout(callback, ms));
+  const clearTimer =
+    deps.clearTimer ??
+    ((timer: ReturnType<typeof setTimeout>): void => clearTimeout(timer));
+  let pendingSettle:
+    | { event: AgentSettledEvent; ctx: ExtensionContext }
+    | undefined;
+  let settleFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let reportedMissingAgentSettled = false;
+  const disarmSettleFallback = (): void => {
+    pendingSettle = undefined;
+    if (!settleFallbackTimer) return;
+    clearTimer(settleFallbackTimer);
+    settleFallbackTimer = undefined;
+  };
+  const takePendingSettle = ():
+    | { event: AgentSettledEvent; ctx: ExtensionContext }
+    | undefined => {
+    const pending = pendingSettle;
+    pendingSettle = undefined;
+    return pending;
+  };
+  const armSettleFallback = (ctx: ExtensionContext): void => {
+    if (!deps.onAgentSettled) return;
+    if (settleFallbackTimer) clearTimer(settleFallbackTimer);
+    pendingSettle = { event: {} as AgentSettledEvent, ctx };
+    const timer = setTimer(() => {
+      settleFallbackTimer = undefined;
+      const pending = takePendingSettle();
+      if (!pending) return;
+      if (!isActive(pending.ctx)) return;
+      void (async () => {
+        try {
+          if (!reportedMissingAgentSettled) {
+            reportedMissingAgentSettled = true;
+            deps.recordRuntimeEvent?.(
+              "session",
+              new Error(
+                "Host never emitted agent_settled; Telegram turns settle from the lifecycle fallback",
+              ),
+              { phase: "agent-settled-fallback-engaged" },
+            );
+          }
+          await deps.onAgentSettled?.(pending.event, pending.ctx);
+        } catch (error) {
+          try {
+            deps.recordRuntimeEvent?.("session", error, {
+              phase: "agent-settled-fallback-failed",
+            });
+          } catch {}
+        }
+      })();
+    }, settleFallbackDelayMs);
+    timer.unref?.();
+    settleFallbackTimer = timer;
+  };
   pi.on("input", async (event, ctx) => {
     if (!isActive(ctx)) return;
     await deps.onInput?.(event, ctx);
@@ -580,6 +655,7 @@ export function registerTelegramLifecycleHooks(
     await deps.onSessionStart(event, ctx);
   });
   pi.on("session_shutdown", async (event, ctx) => {
+    disarmSettleFallback();
     await deps.onSessionShutdown(event, ctx);
   });
   pi.on("session_before_compact", async (event, ctx) => {
@@ -607,6 +683,7 @@ export function registerTelegramLifecycleHooks(
     await deps.onModelSelect(event, ctx);
   });
   pi.on("agent_start", async (event, ctx) => {
+    disarmSettleFallback();
     if (!isActive(ctx)) return;
     await deps.onAgentStart(event, ctx);
   });
@@ -633,8 +710,10 @@ export function registerTelegramLifecycleHooks(
   pi.on("agent_end", async (event, ctx) => {
     if (!isActive(ctx)) return;
     await deps.onAgentEnd(event, ctx);
+    armSettleFallback(ctx);
   });
   pi.on("agent_settled", async (event, ctx) => {
+    disarmSettleFallback();
     if (!isActive(ctx)) return;
     await deps.onAgentSettled?.(event, ctx);
   });
