@@ -99,6 +99,126 @@ function createBridgeCommandContext(
   } as unknown as ExtensionCommandContext;
 }
 
+function createDaemonBridgeCommandContext(
+  confirm: (title: string, prompt: string) => Promise<boolean> | boolean,
+  notify: (message: string) => void = () => {},
+): ExtensionCommandContext {
+  const themeKey = Symbol.for("@earendil-works/pi-coding-agent:theme");
+  const daemonTheme = new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        const host = (globalThis as Record<symbol, Record<string, unknown>>)[
+          themeKey
+        ];
+        if (!host)
+          throw new Error("Theme not initialized. Call initTheme() first.");
+        return host[prop as string];
+      },
+    },
+  );
+  return {
+    cwd: "/repo",
+    ui: {
+      notify,
+      confirm,
+      get theme() {
+        return daemonTheme;
+      },
+    },
+  } as unknown as ExtensionCommandContext;
+}
+
+test("Command helpers open the takeover dialog when the host theme is uninitialized", async () => {
+  const harness = createCommandRegistrationApiHarness();
+  const events: string[] = [];
+  registerTelegramBridgeCommands(harness.api, {
+    promptForConfig: async () => undefined,
+    getStatusLines: () => [],
+    reloadConfig: async () => undefined,
+    hasBotToken: () => true,
+    startPolling: async (_ctx, options) => {
+      events.push(options?.force ? "start-force" : "start");
+      return options?.force
+        ? { ok: true, message: "connected" }
+        : {
+            ok: false,
+            canTakeover: true,
+            owner: "pid 42",
+            message: "active elsewhere",
+          };
+    },
+    stopPolling: async () => undefined,
+    updateStatus: () => {
+      events.push("update-status");
+    },
+  });
+  const dialogs: { title: string; prompt: string }[] = [];
+  const ctx = createDaemonBridgeCommandContext((title, prompt) => {
+    dialogs.push({ title, prompt });
+    return true;
+  });
+
+  await getRequiredCommand(harness.commands, "telegram-connect").handler(
+    "",
+    ctx,
+  );
+
+  assert.deepEqual(events, ["start", "start-force", "update-status"]);
+  assert.deepEqual(dialogs, [
+    {
+      title: "pi-telegram",
+      prompt: "move singleton lock here?\n\nfrom: pid 42\nto: /repo",
+    },
+  ]);
+});
+
+test("Command helpers open the disconnect dialog when the host theme is uninitialized", async () => {
+  const harness = createCommandRegistrationApiHarness();
+  const events: string[] = [];
+  registerTelegramBridgeCommands(harness.api, {
+    promptForConfig: async () => undefined,
+    getStatusLines: () => [],
+    reloadConfig: async () => undefined,
+    hasBotToken: () => true,
+    startPolling: async () => undefined,
+    stopPolling: async () => {
+      events.push("stop");
+      return "stopped";
+    },
+    getDisconnectThreadName: () => "Cinder",
+    updateStatus: () => {
+      events.push("status");
+    },
+  });
+  const dialogs: { title: string; prompt: string }[] = [];
+  const notifications: string[] = [];
+  const ctx = createDaemonBridgeCommandContext(
+    (title, prompt) => {
+      dialogs.push({ title, prompt });
+      return true;
+    },
+    (message) => {
+      notifications.push(message);
+    },
+  );
+
+  await getRequiredCommand(harness.commands, "telegram-disconnect").handler(
+    "",
+    ctx,
+  );
+
+  assert.deepEqual(dialogs, [
+    {
+      title: "pi-telegram",
+      prompt:
+        "Delete Telegram thread Cinder and disconnect this Pi session?",
+    },
+  ]);
+  assert.deepEqual(events, ["stop", "status"]);
+  assert.deepEqual(notifications, ["stopped"]);
+});
+
 test("Command helpers expose Telegram bot command definitions", () => {
   assert.deepEqual(TELEGRAM_COMMAND_EMOJI.model, "🤖");
   assert.deepEqual(TELEGRAM_COMMAND_EMOJI.thinking, "🧠");

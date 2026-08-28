@@ -280,11 +280,27 @@ export interface TelegramBridgeStatusLineState {
   recentRuntimeEvents: TelegramRuntimeEvent[];
 }
 
-export interface TelegramStatusBarTheme {
+export interface TelegramTheme {
   fg: (
     token: "accent" | "dim" | "error" | "muted" | "warning" | "success",
     text: string,
   ) => string;
+}
+
+const PLAIN_TELEGRAM_THEME: TelegramTheme = {
+  fg: (_token, text) => text,
+};
+
+export function resolveTelegramTheme(ctx: {
+  ui?: { theme?: unknown };
+}): TelegramTheme {
+  try {
+    const theme = ctx?.ui?.theme as TelegramTheme | undefined;
+    if (theme && typeof theme.fg === "function") return theme;
+  } catch {
+    return PLAIN_TELEGRAM_THEME;
+  }
+  return PLAIN_TELEGRAM_THEME;
 }
 
 export interface TelegramStatusBarState {
@@ -304,7 +320,7 @@ export interface TelegramStatusBarState {
 
 export interface TelegramStatusRuntimeContext {
   ui: {
-    theme: TelegramStatusBarTheme;
+    theme: TelegramTheme;
     setStatus: (key: string, text: string) => void;
   };
 }
@@ -628,28 +644,19 @@ export function createTelegramStatusHtmlBuilder<TContext>(deps: {
     );
 }
 
-function resolveStatusBarTheme(
-  ctx: TelegramStatusRuntimeContext,
-): TelegramStatusBarTheme | undefined {
-  try {
-    const theme = ctx.ui?.theme;
-    return typeof theme?.fg === "function" ? theme : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export function createTelegramStatusRuntime<
   TContext extends TelegramStatusRuntimeContext,
 >(deps: TelegramStatusRuntimeDeps<TContext>): TelegramStatusRuntime<TContext> {
   const statusKey = deps.statusKey ?? "telegram";
   return {
     updateStatus: (ctx, error) => {
-      const theme = resolveStatusBarTheme(ctx);
-      if (!theme) return;
+      if (typeof ctx.ui?.setStatus !== "function") return;
       ctx.ui.setStatus(
         statusKey,
-        buildTelegramStatusBarText(theme, deps.getStatusBarState(ctx, error)),
+        buildTelegramStatusBarText(
+          resolveTelegramTheme(ctx),
+          deps.getStatusBarState(ctx, error),
+        ),
       );
     },
     getStatusLines: (options) =>
@@ -879,7 +886,7 @@ function getTelegramStatusBarLabel(state: TelegramStatusBarState): string {
 }
 
 export function buildTelegramStatusBarText(
-  theme: TelegramStatusBarTheme,
+  theme: TelegramTheme,
   state: TelegramStatusBarState,
 ): string {
   const label = theme.fg("accent", getTelegramStatusBarLabel(state));

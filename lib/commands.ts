@@ -10,7 +10,10 @@ import {
 } from "./config.ts";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi.ts";
 import { escapeHtml } from "./rendering.ts";
-import type { TelegramBridgeStatusLineOptions } from "./status.ts";
+import {
+  resolveTelegramTheme,
+  type TelegramBridgeStatusLineOptions,
+} from "./status.ts";
 import {
   createTelegramControlItemBuilder,
   createTelegramControlQueueController,
@@ -368,14 +371,14 @@ function parseTelegramProfileArg(args: string): string | undefined {
 }
 
 function formatTelegramTakeoverTitle(ctx: ExtensionCommandContext): string {
-  return ctx.ui.theme.fg("accent", "pi-telegram");
+  return resolveTelegramTheme(ctx).fg("accent", "pi-telegram");
 }
 
 function formatTelegramTakeoverPrompt(
   ctx: ExtensionCommandContext,
   owner?: string,
 ): string {
-  const theme = ctx.ui.theme;
+  const theme = resolveTelegramTheme(ctx);
   const action = theme.fg("warning", "move singleton lock here?");
   const from = theme.fg("muted", "from:");
   const to = theme.fg("muted", "to:");
@@ -497,9 +500,10 @@ export function registerTelegramBridgeCommands(
     handler: async (_args, ctx) => {
       const threadName = deps.getDisconnectThreadName?.();
       if (threadName) {
+        const theme = resolveTelegramTheme(ctx);
         const confirmed = await ctx.ui.confirm(
-          ctx.ui.theme.fg("accent", "pi-telegram"),
-          `Delete Telegram thread ${ctx.ui.theme.fg("warning", threadName)} and disconnect this Pi session?`,
+          theme.fg("accent", "pi-telegram"),
+          `Delete Telegram thread ${theme.fg("warning", threadName)} and disconnect this Pi session?`,
         );
         if (!confirmed) {
           ctx.ui.notify("Telegram disconnect cancelled.", "info");

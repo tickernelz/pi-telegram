@@ -21,6 +21,7 @@ import {
   getTelegramStatusBarProcessingStatus,
   recordStructuredTelegramRuntimeEvent,
   registerTelegramStatusLineProvider,
+  resolveTelegramTheme,
   type TelegramRuntimeEvent,
 } from "../lib/status.ts";
 
@@ -1372,12 +1373,26 @@ test("Runtime event recording redacts bot tokens and keeps a bounded ring", () =
   ]);
 });
 
-test("Status runtime skips the status bar when the host theme is uninitialized", () => {
+test("Status runtime renders a plain status bar when the host theme is uninitialized", () => {
   const events: string[] = [];
+  const themeKey = Symbol.for("@earendil-works/pi-coding-agent:theme");
+  const daemonTheme = new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        const host = (globalThis as Record<symbol, Record<string, unknown>>)[
+          themeKey
+        ];
+        if (!host)
+          throw new Error("Theme not initialized. Call initTheme() first.");
+        return host[prop as string];
+      },
+    },
+  );
   const ctx = {
     ui: {
-      get theme(): never {
-        throw new Error("Theme not initialized. Call initTheme() first.");
+      get theme() {
+        return daemonTheme;
       },
       setStatus: (key: string, text: string) => {
         events.push(`${key}:${text}`);
@@ -1409,5 +1424,59 @@ test("Status runtime skips the status bar when the host theme is uninitialized",
   });
 
   assert.doesNotThrow(() => runtime.updateStatus(ctx as never));
-  assert.deepEqual(events, []);
+  assert.deepEqual(events, ["telegram:telegram connected"]);
+});
+
+test("Status runtime skips the status bar when the host exposes no setStatus", () => {
+  const runtime = createTelegramStatusRuntime({
+    getStatusBarState: () => ({
+      hasBotToken: true,
+      pollingActive: true,
+      paired: true,
+      compactionInProgress: false,
+      processing: false,
+      queuedStatus: "",
+    }),
+    getBridgeStatusLineState: () => ({
+      botUsername: undefined,
+      allowedUserId: undefined,
+      lockState: "active here",
+      pollingActive: false,
+      lastUpdateId: undefined,
+      pendingDispatch: false,
+      compactionInProgress: false,
+      activeToolExecutions: 0,
+      pendingModelSwitch: false,
+      queuedItems: [],
+      recentRuntimeEvents: [],
+    }),
+  });
+
+  assert.doesNotThrow(() => runtime.updateStatus({} as never));
+});
+
+test("Theme resolution keeps real colour and falls back to plain text", () => {
+  assert.equal(
+    resolveTelegramTheme({
+      ui: { theme: { fg: (token: string, text: string) => `<${token}>${text}` } },
+    }).fg("accent", "pi"),
+    "<accent>pi",
+  );
+  assert.equal(resolveTelegramTheme({}).fg("accent", "pi"), "pi");
+  assert.equal(resolveTelegramTheme({ ui: {} }).fg("warning", "pi"), "pi");
+  assert.equal(
+    resolveTelegramTheme({ ui: { theme: { fg: "not-a-function" } } }).fg(
+      "muted",
+      "pi",
+    ),
+    "pi",
+  );
+  assert.equal(
+    resolveTelegramTheme({
+      get ui(): never {
+        throw new Error("Theme not initialized. Call initTheme() first.");
+      },
+    }).fg("error", "pi"),
+    "pi",
+  );
 });
